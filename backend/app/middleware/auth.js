@@ -1,0 +1,55 @@
+const jwt = require("jsonwebtoken");
+
+const getTokenFromRequest = (req) => {
+  const headerToken = req.headers["x-access-token"];
+
+  if (typeof headerToken === "string") {
+    if (headerToken.startsWith("Bearer ")) {
+      return headerToken.split(" ")[1];
+    }
+
+    return headerToken;
+  }
+
+  if (req.cookies?.accessToken) {
+    return req.cookies.accessToken;
+  }
+
+  return null;
+};
+
+const Auth = (req, res, next) => {
+  const token = getTokenFromRequest(req);
+
+  if (!token) {
+    return res.status(401).json({
+      status: false,
+      message: "Access denied. No token provided",
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(
+      token,
+      process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET
+    );
+
+    req.user = decoded;
+
+    return next();
+  } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({
+        status: false,
+        message: "Access token expired. Please refresh your session.",
+      });
+    }
+
+    return res.status(401).json({
+      status: false,
+      message: "Invalid access token",
+    });
+  }
+};
+
+module.exports = Auth;
