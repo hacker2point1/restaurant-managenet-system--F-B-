@@ -86,6 +86,7 @@ const reservationSchema = new mongoose.Schema(
         "confirmed",
         "completed",
         "cancelled",
+        "rejected",
         "no-show",
       ],
       default: "pending",
@@ -107,6 +108,11 @@ const reservationSchema = new mongoose.Schema(
     // ============================================================
 
     cancelledAt: {
+      type: Date,
+      default: null,
+    },
+
+    rejectedAt: {
       type: Date,
       default: null,
     },

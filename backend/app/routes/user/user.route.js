@@ -7,14 +7,17 @@ const authorize = require("../../middleware/authorize");
 
 const userController = require("../../controller/user/user.controller");
 
-
-
+//create user
+router.post("/",
+  Auth,
+  authorize("admin","manager"), 
+  userController.createUser);
 
 // Get all users
 router.get(
   "/",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.getAllUsers
 );
 
@@ -22,7 +25,7 @@ router.get(
 router.get(
   "/:id",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.getUserById
 );
 
@@ -30,7 +33,7 @@ router.get(
 router.patch(
   "/:id",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.updateUser
 );
 
@@ -38,7 +41,7 @@ router.patch(
 router.delete(
   "/:id",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.deleteUser
 );
 
@@ -46,7 +49,7 @@ router.delete(
 router.patch(
   "/:id/activate",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.activateUser
 );
 
@@ -54,7 +57,7 @@ router.patch(
 router.patch(
   "/:id/deactivate",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   userController.deactivateUser
 );
 

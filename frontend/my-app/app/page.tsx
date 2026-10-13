@@ -1,9 +1,10 @@
 import Image from "next/image";
+import SignUp from "./auth/signUp/page";
 
 export default function Home() {
   return(
     <>
-    <p>this is the home page</p>
+   <SignUp/>
     </>
   )
 }

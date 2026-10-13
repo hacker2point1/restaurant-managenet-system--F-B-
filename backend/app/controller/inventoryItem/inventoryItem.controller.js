@@ -1,4 +1,5 @@
 const InventoryItem = require("../../models/inventoryItem.model");
+const mongoose = require("mongoose");
 const Branch = require("../../models/branch.model");
 const StatusCode = require("../../utils/statusCode");
 const { isValid: isValidId } = require("../../utils/validation/validation");
@@ -86,10 +87,20 @@ class InventoryItemController {
       // Create
       // --------------------------------------------------
 
+      const inventoryItemId = new mongoose.Types.ObjectId();
+      const branchSkuPrefix = String(
+        branch.branchCode || branchId.slice(-6)
+      )
+        .replace(/[^a-z0-9]/gi, "")
+        .toUpperCase();
+      const itemSku = sku?.trim() ||
+        `INV-${branchSkuPrefix}-${inventoryItemId.toString().slice(-8).toUpperCase()}`;
+
       const inventoryItem = await InventoryItem.create({
+        _id: inventoryItemId,
         branch: branchId,
         name: name.trim(),
-        sku: sku ? sku.trim() : undefined,
+        sku: itemSku,
 
         unit,
 
@@ -222,7 +233,7 @@ class InventoryItemController {
 
       const limitNumber = Math.min(
         Math.max(Number(limit), 1),
-        100
+        10
       );
 
       const skip = (pageNumber - 1) * limitNumber;
@@ -231,14 +242,71 @@ class InventoryItemController {
       // Get data
       // --------------------------------------------------
 
-      const [items, total] = await Promise.all([
+      const [items, total, statsResult] = await Promise.all([
         InventoryItem.find(filter)
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limitNumber),
 
         InventoryItem.countDocuments(filter),
+
+        InventoryItem.aggregate([
+          {
+            $match: {
+              ...filter,
+              branch: new mongoose.Types.ObjectId(branchId),
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              inStock: {
+                $sum: {
+                  $cond: [
+                    { $gt: ["$currentQuantity", "$minimumStock"] },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              lowStock: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $gt: ["$currentQuantity", 0] },
+                        { $lte: ["$currentQuantity", "$minimumStock"] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              outOfStock: {
+                $sum: {
+                  $cond: [{ $eq: ["$currentQuantity", 0] }, 1, 0],
+                },
+              },
+              inventoryValue: {
+                $sum: {
+                  $multiply: ["$currentQuantity", "$unitCost"],
+                },
+              },
+            },
+          },
+          { $project: { _id: 0 } },
+        ]),
       ]);
+
+      const stats = statsResult[0] || {
+        total: 0,
+        inStock: 0,
+        lowStock: 0,
+        outOfStock: 0,
+        inventoryValue: 0,
+      };
 
       return res.status(StatusCode.SUCCESS).json({
         status: true,
@@ -250,6 +318,8 @@ class InventoryItemController {
           limit: limitNumber,
           totalPages: Math.ceil(total / limitNumber),
         },
+
+        stats,
 
         data: items,
       });
@@ -957,6 +1027,154 @@ class InventoryItemController {
       });
     }
   }
+  // ======================================================
+// GET DELETED INVENTORY ITEMS
+// ======================================================
+
+async getDeletedInventoryItems(req, res) {
+  try {
+    const { branchId } = req.params;
+
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      unit,
+    } = req.query;
+
+    // --------------------------------------------------
+    // Validate branch ID
+    // --------------------------------------------------
+
+    if (!isValidId(branchId)) {
+      return res.status(StatusCode.BAD_REQUEST).json({
+        status: false,
+        message: "Invalid branch ID",
+      });
+    }
+
+    // --------------------------------------------------
+    // Build filter
+    // --------------------------------------------------
+
+    const filter = {
+      branch: branchId,
+      isDeleted: true,
+    };
+
+    // --------------------------------------------------
+    // Search
+    // --------------------------------------------------
+
+    if (search) {
+      filter.$or = [
+        {
+          name: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+        {
+          sku: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+      ];
+    }
+
+    // --------------------------------------------------
+    // Unit filter
+    // --------------------------------------------------
+
+    if (unit) {
+      filter.unit = unit;
+    }
+
+    // --------------------------------------------------
+    // Pagination
+    // --------------------------------------------------
+
+    const pageNumber = Math.max(
+      Number(page),
+      1
+    );
+
+    const limitNumber = Math.min(
+      Math.max(Number(limit), 1),
+      100
+    );
+
+    const skip =
+      (pageNumber - 1) *
+      limitNumber;
+
+    // --------------------------------------------------
+    // Get deleted items
+    // --------------------------------------------------
+
+    const [items, total] =
+      await Promise.all([
+        InventoryItem.find(filter)
+          .sort({
+            deletedAt: -1,
+          })
+          .skip(skip)
+          .limit(limitNumber),
+
+        InventoryItem.countDocuments(
+          filter
+        ),
+      ]);
+
+    // --------------------------------------------------
+    // Response
+    // --------------------------------------------------
+
+    return res
+      .status(StatusCode.SUCCESS)
+      .json({
+        status: true,
+
+        message:
+          "Deleted inventory items fetched successfully",
+
+        pagination: {
+          total,
+
+          page: pageNumber,
+
+          limit: limitNumber,
+
+          totalPages:
+            Math.ceil(
+              total / limitNumber
+            ),
+        },
+
+        data: items,
+      });
+
+  } catch (error) {
+    console.error(
+      "Get Deleted Inventory Items Error:",
+      error
+    );
+
+    return res
+      .status(
+        StatusCode.SERVER_ERROR
+      )
+      .json({
+        status: false,
+
+        message:
+          "Internal server error",
+
+        error: error.message,
+      });
+  }
+}
 }
 
 

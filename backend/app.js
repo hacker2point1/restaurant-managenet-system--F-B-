@@ -72,27 +72,40 @@ app.use("/api/v1/branch", reservationRoute)
 const menuItemsRoute = require('./app/routes/menueItems/menuItems.route')
 app.use("/api/v1/menuItems", menuItemsRoute)
 
-const inventoryItems = require('./app/routes/inventoryItem/inventoryItem.route')
-app.use("/api/v1/inventoryItem", inventoryItems)
+const inventoryItemsRoute = require('./app/routes/inventoryItem/inventoryItem.route')
+app.use("/api/v1/inventoryItem", inventoryItemsRoute)
 
-const customers = require('./app/routes/customer/coustomer.route')
-app.use("/api/v1/customer", customers)
+const customersRoute = require('./app/routes/customer/coustomer.route')
+app.use("/api/v1/customer", customersRoute)
 
-const orders = require('./app/routes/order/order.route')
-app.use("/api/v1/order", orders)
+const ordersRoute = require('./app/routes/order/order.route')
+app.use("/api/v1/order", ordersRoute)
 
-const tables = require('./app/routes/table/table.route')
-app.use("/api/v1/table", tables)
+const tablesRoute = require('./app/routes/table/table.route')
+app.use("/api/v1/table", tablesRoute)
 
-const coupons = require('./app/routes/coupon/coupon.route')
-app.use("/api/v1/coupon", coupons)
+const couponsRoute = require('./app/routes/coupon/coupon.route')
+app.use("/api/v1/coupon", couponsRoute)
 
-const reviews = require('./app/routes/review/review.router')
-app.use("/api/v1/review", reviews)
+const reviewsRoute = require('./app/routes/review/review.router')
+app.use("/api/v1/review", reviewsRoute)
 
-const loyality = require('./app/routes/review/review.router')
-app.use("/api/v1/loyalities", loyality)
+const loyalityRoute = require('./app/routes/review/review.router')
+app.use("/api/v1/loyalities", loyalityRoute)
 
+const analyticsRoute = require('./app/routes/analytics/analytics.router')
+app.use("/api/v1/analytics", analyticsRoute)
+
+const inventoryTransaction = require('./app/routes/inventoryTransaction/inventoryTransaction.route')
+app.use("/api/v1/inventoryTransaction", inventoryTransaction)
+
+const coupon = require('./app/routes/coupon/coupon.route')
+app.use("/api/v1/coupon", coupon)
+
+
+const homepageStatsRoutes = require("./app/routes/homePage/homepage.route");
+
+app.use("/api/v1/public", homepageStatsRoutes);
 // ==============================
 // Server
 // ==============================

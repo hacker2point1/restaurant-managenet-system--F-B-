@@ -112,6 +112,15 @@ class authController {
         email: normalizedEmail,
       });
       if (existingUser) {
+        if (!existingUser.isVerified) {
+          await sendEmail(req, existingUser);
+
+          return res.status(StatusCode.SUCCESS).json({
+            status: true,
+            message: "A new verification OTP has been sent to your email.",
+          });
+        }
+
         return res.status(StatusCode.BAD_REQUEST).json({
           status: false,
           message: "Email already exists",

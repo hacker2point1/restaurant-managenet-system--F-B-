@@ -4,6 +4,7 @@ const Reservation = require("../../models/reservation.model");
 const Branch = require("../../models/branch.model");
 const Table = require("../../models/table.model");
 const Customer = require("../../models/customer.model");
+const User = require("../../models/users.model");
 
 class ReservationController {
   // ============================================================
@@ -24,6 +25,41 @@ class ReservationController {
         guestCount,
         specialRequest,
       } = req.body;
+      let reservationCustomerId = customer;
+
+      if (req.user?.role === "customer") {
+        const user = await User.findById(req.user.id).select(
+          "name email phone"
+        );
+
+        if (!user) {
+          return res.status(401).json({
+            status: false,
+            message: "Authenticated customer not found",
+          });
+        }
+
+        const customerProfile = await Customer.findOneAndUpdate(
+          { user: user._id },
+          {
+            $set: {
+              name: user.name,
+              email: user.email,
+              phone: user.phone,
+              isActive: true,
+              isDeleted: false,
+            },
+          },
+          {
+            new: true,
+            upsert: true,
+            runValidators: true,
+            setDefaultsOnInsert: true,
+          }
+        );
+
+        reservationCustomerId = customerProfile._id;
+      }
 
       // --------------------------------------------------------
       // Validate Branch ID
@@ -40,14 +76,14 @@ class ReservationController {
       // Validate Customer
       // --------------------------------------------------------
 
-      if (!customer) {
+      if (!reservationCustomerId) {
         return res.status(400).json({
           status: false,
           message: "Customer is required",
         });
       }
 
-      if (!mongoose.Types.ObjectId.isValid(customer)) {
+      if (!mongoose.Types.ObjectId.isValid(reservationCustomerId)) {
         return res.status(400).json({
           status: false,
           message: "Invalid customer ID",
@@ -184,7 +220,7 @@ class ReservationController {
           {
             $match: {
               _id: new mongoose.Types.ObjectId(
-                customer
+                reservationCustomerId
               ),
             },
           },
@@ -347,7 +383,7 @@ class ReservationController {
       // --------------------------------------------------------
 
       const reservationData = {
-        customer,
+        customer: reservationCustomerId,
         branch: branchId,
         table,
 
@@ -408,6 +444,101 @@ class ReservationController {
   // GET RESERVATIONS
   // GET /api/branches/:branchId/reservations
   // ============================================================
+
+  async getAdminReservations(req, res) {
+    try {
+      const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+      const limit = Math.min(
+        Math.max(Number.parseInt(req.query.limit, 10) || 20, 1),
+        100
+      );
+      const filter = {};
+      const { status, branchId, date } = req.query;
+
+      if (status && status !== "all") {
+        filter.status = status;
+      }
+
+      if (branchId) {
+        if (!mongoose.Types.ObjectId.isValid(branchId)) {
+          return res.status(400).json({
+            status: false,
+            message: "Invalid branch ID",
+          });
+        }
+
+        filter.branch = new mongoose.Types.ObjectId(branchId);
+      }
+
+      if (date) {
+        const dateObject = new Date(date);
+
+        if (Number.isNaN(dateObject.getTime())) {
+          return res.status(400).json({
+            status: false,
+            message: "Invalid date",
+          });
+        }
+
+        filter.reservationDate = dateObject;
+      }
+
+      const [reservations, total, statusCounts] = await Promise.all([
+        Reservation.find(filter)
+          .populate("customer", "name email phone")
+          .populate("branch", "name branchCode")
+          .populate("table", "tableNumber capacity location")
+          .populate("createdBy", "role")
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean(),
+        Reservation.countDocuments(filter),
+        Reservation.aggregate([
+          { $match: filter },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]),
+      ]);
+
+      const countsByStatus = Object.fromEntries(
+        statusCounts.map(({ _id, count }) => [_id, count])
+      );
+
+      return res.status(200).json({
+        status: true,
+        message: "Reservations fetched successfully",
+        data: reservations.map((reservation) => ({
+          ...reservation,
+          bookingSource:
+            reservation.createdBy?.role === "customer"
+              ? "online"
+              : "on-the-spot",
+        })),
+        stats: {
+          total,
+          confirmed: countsByStatus.confirmed || 0,
+          pending: countsByStatus.pending || 0,
+          completed: countsByStatus.completed || 0,
+          cancelled:
+            (countsByStatus.cancelled || 0) +
+            (countsByStatus.rejected || 0),
+        },
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (error) {
+      console.error("Get Admin Reservations Error:", error);
+
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch reservations",
+      });
+    }
+  }
 
   async getReservations(req, res) {
     try {
@@ -533,6 +664,23 @@ class ReservationController {
             },
           },
 
+          // Reservation creator, used to identify online customer bookings.
+          {
+            $lookup: {
+              from: "users",
+              localField: "createdBy",
+              foreignField: "_id",
+              as: "creator",
+            },
+          },
+
+          {
+            $unwind: {
+              path: "$creator",
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+
           // Sort
           {
             $sort: {
@@ -570,6 +718,14 @@ class ReservationController {
                     cancelledAt: 1,
 
                     createdBy: 1,
+
+                    bookingSource: {
+                      $cond: [
+                        { $eq: ["$creator.role", "customer"] },
+                        "online",
+                        "on-the-spot",
+                      ],
+                    },
 
                     createdAt: 1,
                     updatedAt: 1,
@@ -1128,6 +1284,20 @@ class ReservationController {
         });
       }
 
+      if (req.user?.role === "customer") {
+        const customer = await Customer.findOne({
+          user: req.user.id,
+          isDeleted: false,
+        }).select("_id");
+
+        if (!customer || reservation.customer.toString() !== customer._id.toString()) {
+          return res.status(403).json({
+            status: false,
+            message: "You can only cancel your own reservations",
+          });
+        }
+      }
+
       if (
         [
           "completed",
@@ -1173,6 +1343,48 @@ class ReservationController {
   // CONFIRM RESERVATION
   // PATCH /api/reservations/:id/confirm
   // ============================================================
+
+  async rejectReservation(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: false,
+          message: "Invalid reservation ID",
+        });
+      }
+
+      const reservation = await Reservation.findOne({
+        _id: id,
+        status: "pending",
+      });
+
+      if (!reservation) {
+        return res.status(404).json({
+          status: false,
+          message: "Pending reservation not found",
+        });
+      }
+
+      reservation.status = "rejected";
+      reservation.rejectedAt = new Date();
+      await reservation.save();
+
+      return res.status(200).json({
+        status: true,
+        message: "Reservation rejected",
+        data: reservation,
+      });
+    } catch (error) {
+      console.error("Reject Reservation Error:", error);
+
+      return res.status(500).json({
+        status: false,
+        message: "Failed to reject reservation",
+      });
+    }
+  }
 
   async confirmReservation(req, res) {
     try {
@@ -1622,6 +1834,19 @@ class ReservationController {
         });
       }
 
+      const branch = await Branch.findOne({
+        _id: branchId,
+        isActive: true,
+        isDeleted: false,
+      }).select("_id");
+
+      if (!branch) {
+        return res.status(404).json({
+          status: false,
+          message: "Branch not found or inactive",
+        });
+      }
+
       if (
         !reservationDate ||
         !startTime ||
@@ -1756,9 +1981,7 @@ class ReservationController {
               isActive: true,
               isDeleted: false,
 
-              capacity: {
-                $gte: numberOfGuests,
-              },
+              capacity: numberOfGuests,
 
               _id: {
                 $nin: bookedTableIds,
@@ -1853,8 +2076,25 @@ class ReservationController {
     res
   ) {
     try {
-      const { customerId } =
-        req.params;
+      let { customerId } = req.params;
+
+      if (req.user?.role === "customer") {
+        const customer = await Customer.findOne({
+          user: req.user.id,
+          isDeleted: false,
+        }).select("_id");
+
+        if (!customer) {
+          return res.status(200).json({
+            status: true,
+            message: "Reservation history fetched successfully",
+            pagination: { total: 0, page: 1, limit: 10, totalPages: 0 },
+            data: [],
+          });
+        }
+
+        customerId = customer._id.toString();
+      }
 
       const {
         page = 1,

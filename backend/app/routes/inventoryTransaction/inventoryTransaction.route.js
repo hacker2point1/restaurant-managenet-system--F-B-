@@ -110,4 +110,45 @@ router.get(
   inventoryTransactionController.getInventoryTransactionReport
 );
 
+
+// ============================================================
+// REPORT / SPECIAL READ OPERATIONS — PUT THESE FIRST
+// ============================================================
+
+router.get(
+  "/inventory-transactions/consumption",
+  Auth,
+  authorize("admin", "manager"),
+  inventoryTransactionController.getInventoryConsumption
+);
+
+router.get(
+  "/inventory-transactions/report",
+  Auth,
+  authorize("admin", "manager"),
+  inventoryTransactionController.getInventoryTransactionReport
+);
+
+// ============================================================
+// GET TRANSACTIONS
+// ============================================================
+
+router.get(
+  "/inventory-transactions",
+  Auth,
+  authorize("admin", "manager", "staff"),
+  inventoryTransactionController.getTransactions
+);
+
+// ============================================================
+// GET TRANSACTION BY ID — KEEP THIS LAST
+// ============================================================
+
+router.get(
+  "/inventory-transactions/:id",
+  Auth,
+  authorize("admin", "manager", "staff"),
+  inventoryTransactionController.getTransactionById
+);
+
 module.exports = router;

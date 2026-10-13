@@ -159,6 +159,118 @@ async createCategory(req, res) {
 }
 
   // ============================================================
+  // GET PUBLIC CATEGORIES FOR HOMEPAGE
+  // ============================================================
+
+  async getPublicCategories(req, res) {
+    try {
+      const pageNumber = Math.max(parseInt(req.query.page) || 1, 1);
+      const limitNumber = Math.min(
+        Math.max(parseInt(req.query.limit) || 5, 1),
+        20
+      );
+      const skip = (pageNumber - 1) * limitNumber;
+      const search = String(req.query.search || "").trim();
+      const matchStage = {
+        isActive: true,
+        isDeleted: false,
+      };
+
+      if (search) {
+        matchStage.name = { $regex: search, $options: "i" };
+      }
+
+      const result = await MenuCategory.aggregate([
+        { $match: matchStage },
+        {
+          $lookup: {
+            from: "branches",
+            localField: "branch",
+            foreignField: "_id",
+            as: "branchData",
+          },
+        },
+        { $unwind: "$branchData" },
+        {
+          $match: {
+            "branchData.isActive": true,
+            "branchData.isDeleted": false,
+          },
+        },
+        {
+          $lookup: {
+            from: "menuitems",
+            let: { categoryId: "$_id" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ["$category", "$$categoryId"] },
+                      { $eq: ["$isAvailable", true] },
+                    ],
+                  },
+                },
+              },
+              { $count: "count" },
+            ],
+            as: "menuItemCount",
+          },
+        },
+        {
+          $addFields: {
+            menuItemCount: {
+              $ifNull: [{ $arrayElemAt: ["$menuItemCount.count", 0] }, 0],
+            },
+          },
+        },
+        { $sort: { displayOrder: 1, createdAt: -1 } },
+        {
+          $facet: {
+            data: [
+              { $skip: skip },
+              { $limit: limitNumber },
+              {
+                $project: {
+                  _id: 1,
+                  name: 1,
+                  description: 1,
+                  image: 1,
+                  displayOrder: 1,
+                  menuItemCount: 1,
+                },
+              },
+            ],
+            total: [{ $count: "count" }],
+          },
+        },
+      ]);
+
+      const categories = result[0]?.data || [];
+      const total = result[0]?.total[0]?.count || 0;
+
+      return res.status(statusCode.OK).json({
+        status: true,
+        message: "Public menu categories fetched successfully",
+        data: categories,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber),
+        },
+      });
+    } catch (error) {
+      console.error("Get Public Menu Categories Error:", error);
+
+      return res.status(statusCode.INTERNAL_SERVER_ERROR).json({
+        status: false,
+        message: "Failed to fetch menu categories",
+      });
+    }
+  }
+
+  // ============================================================
   // GET ALL CATEGORIES
   // ============================================================
 
@@ -1063,6 +1175,100 @@ async updateCategory(req, res) {
     }
   }
 
+
+  // ============================================================
+  // GET PUBLIC MENU ITEMS FOR A CATEGORY
+  // ============================================================
+
+  async getPublicCategoryMenuItems(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(statusCode.BAD_REQUEST).json({
+          status: false,
+          message: "Invalid category ID",
+        });
+      }
+
+      const category = await MenuCategory.findOne({
+        _id: id,
+        isActive: true,
+        isDeleted: false,
+      })
+        .select("name description branch")
+        .lean();
+
+      if (!category) {
+        return res.status(statusCode.NOT_FOUND).json({
+          status: false,
+          message: "Menu category not found",
+        });
+      }
+
+      const branch = await Branch.findOne({
+        _id: category.branch,
+        isActive: true,
+        isDeleted: false,
+      })
+        .select("_id")
+        .lean();
+
+      if (!branch) {
+        return res.status(statusCode.NOT_FOUND).json({
+          status: false,
+          message: "Menu category not found",
+        });
+      }
+
+      const pageNumber = Math.max(parseInt(req.query.page) || 1, 1);
+      const limitNumber = Math.min(
+        Math.max(parseInt(req.query.limit) || 12, 1),
+        50
+      );
+      const filter = {
+        category: category._id,
+        isAvailable: true,
+        isDeleted: false,
+      };
+      const skip = (pageNumber - 1) * limitNumber;
+      const [items, total] = await Promise.all([
+        MenuItem.find(filter)
+          .select(
+            "name description price foodType tags images preparationTime averageRating totalReviews"
+          )
+          .sort({ isFeatured: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(limitNumber)
+          .lean(),
+        MenuItem.countDocuments(filter),
+      ]);
+
+      return res.status(statusCode.OK).json({
+        status: true,
+        message: "Available menu items fetched successfully",
+        category: {
+          _id: category._id,
+          name: category.name,
+          description: category.description,
+        },
+        data: items,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber),
+        },
+      });
+    } catch (error) {
+      console.error("Get Public Category Menu Items Error:", error);
+
+      return res.status(statusCode.INTERNAL_SERVER_ERROR).json({
+        status: false,
+        message: "Failed to fetch menu items",
+      });
+    }
+  }
 
   // ============================================================
   // GET CATEGORY MENU ITEMS

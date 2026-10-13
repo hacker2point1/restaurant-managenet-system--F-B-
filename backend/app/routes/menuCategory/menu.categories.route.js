@@ -13,6 +13,16 @@ const upload = require("../../middleware/upload");
 // MENU CATEGORY ROUTES
 // ============================================================
 
+router.get(
+  "/public/menu-categories",
+  menuCategoryController.getPublicCategories
+);
+
+router.get(
+  "/public/menu-categories/:id/menu-items",
+  menuCategoryController.getPublicCategoryMenuItems
+);
+
 
 // ------------------------------------------------------------
 // Create Category

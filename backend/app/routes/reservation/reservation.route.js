@@ -6,10 +6,37 @@ const Auth = require("../../middleware/auth");
 const authorize = require("../../middleware/authorize");
 
 const reservationController = require("../../controller/reservation/reservation.controller");
+const customerController = require("../../controller/customer/customer.controller");
 
 // ============================================================
 // RESERVATION
 // ============================================================
+
+router.get(
+  "/customers",
+  Auth,
+  authorize("admin", "manager", "staff"),
+  customerController.getCustomers
+);
+
+router.post(
+  "/customers",
+  Auth,
+  authorize("admin", "manager", "staff"),
+  customerController.createCustomer
+);
+
+router.get(
+  "/admin/reservations",
+  Auth,
+  authorize("admin", "manager"),
+  reservationController.getAdminReservations
+);
+
+router.get(
+  "/public/branches/:branchId/reservations/check-availability",
+  reservationController.checkReservationAvailability
+);
 
 // Create reservation
 router.post(
@@ -36,6 +63,13 @@ router.get(
 );
 
 // Get reservation history for customer
+router.get(
+  "/customers/me/reservations/history",
+  Auth,
+  authorize("customer"),
+  reservationController.getReservationHistory
+);
+
 router.get(
   "/customers/:customerId/reservations/history",
   Auth,
@@ -65,6 +99,13 @@ router.patch(
   Auth,
   authorize("admin", "manager", "staff", "customer"),
   reservationController.cancelReservation
+);
+
+router.patch(
+  "/reservations/:id/reject",
+  Auth,
+  authorize("admin", "manager"),
+  reservationController.rejectReservation
 );
 
 // Confirm reservation

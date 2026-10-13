@@ -328,17 +328,31 @@ async updateRestaurant(req, res) {
     // Get form-data fields
     // ---------------------------------------------
 
-    const {
-      name,
-      description,
-      address,
-      branches,
-      branch,
-      phone,
-      email,
-    } = req.body;
+const {
+  name,
+  description,
+  address,
+  branches,
+  branch,
+  phone,
+  email,
+  cuisineTypes,
+  website,
+} = req.body;
 
     const branchData = branches ?? branch;
+
+    if (cuisineTypes !== undefined) {
+  restaurant.cuisineTypes =
+    typeof cuisineTypes === "string" &&
+    cuisineTypes.trim()
+      ? JSON.parse(cuisineTypes)
+      : cuisineTypes;
+}
+
+if (website !== undefined) {
+  restaurant.website = website;
+}
 
     // ---------------------------------------------
     // Update Name

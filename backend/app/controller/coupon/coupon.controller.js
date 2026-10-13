@@ -4,7 +4,7 @@ const Coupon = require("../../models/coupon.model");
 const Order = require("../../models/order.Model");
 
 const StatusCode = require("../../utils/statusCode");
-const { isValidId } = require("../../utils/validation/validation");
+const { isValid: isValidId } = require("../../utils/validation/validation");
 
 class CouponController {
   // ============================================================
@@ -170,12 +170,15 @@ class CouponController {
   async getCoupons(req, res) {
     try {
       const {
-        restaurant,
-        branch,
-        isActive,
-        page = 1,
-        limit = 10,
-      } = req.query;
+  restaurant,
+  branch,
+  isActive,
+  discountType,
+  audience,
+  search,
+  page = 1,
+  limit = 10,
+} = req.query;
 
       const currentPage = Math.max(Number(page), 1);
       const perPage = Math.max(Number(limit), 1);
@@ -211,7 +214,44 @@ class CouponController {
       if (isActive !== undefined) {
         matchStage.isActive = isActive === "true";
       }
+      if (discountType) {
+  if (!["percentage", "fixed"].includes(discountType)) {
+    return res.status(StatusCode.BAD_REQUEST).json({
+      status: false,
+      message: "Invalid discount type",
+    });
+  }
 
+  matchStage.discountType = discountType;
+}
+
+if (search && search.trim()) {
+  matchStage.code = {
+    $regex: search.trim(),
+    $options: "i",
+  };
+}
+
+if (audience === "all-customers") {
+  matchStage.$or = [
+    {
+      applicableCustomers: {
+        $size: 0,
+      },
+    },
+    {
+      applicableCustomers: {
+        $exists: false,
+      },
+    },
+  ];
+}
+
+if (audience === "specific") {
+  matchStage["applicableCustomers.0"] = {
+    $exists: true,
+  };
+}
       const result = await Coupon.aggregate([
         {
           $match: matchStage,
@@ -756,8 +796,9 @@ class CouponController {
         },
         {
           $set: {
-            isDeleted: false,
-            deletedAt: null,
+           isDeleted: false,
+  deletedAt: null,
+  isActive: true,
           },
         },
         {
@@ -1568,6 +1609,139 @@ class CouponController {
       });
     }
   }
+  async getDeletedCoupons(req, res) {
+  try {
+    const {
+      restaurant,
+      page = 1,
+      limit = 10,
+      search,
+    } = req.query;
+
+    const currentPage = Math.max(Number(page), 1);
+    const perPage = Math.max(Number(limit), 1);
+    const skip = (currentPage - 1) * perPage;
+
+    const matchStage = {
+      isDeleted: true,
+    };
+
+    if (restaurant) {
+      if (!isValidId(restaurant)) {
+        return res.status(StatusCode.BAD_REQUEST).json({
+          status: false,
+          message: "Invalid restaurant ID",
+        });
+      }
+
+      matchStage.restaurant =
+        new mongoose.Types.ObjectId(restaurant);
+    }
+
+    if (search && search.trim()) {
+      matchStage.code = {
+        $regex: search.trim(),
+        $options: "i",
+      };
+    }
+
+    const result = await Coupon.aggregate([
+      {
+        $match: matchStage,
+      },
+
+      {
+        $lookup: {
+          from: "restaurants",
+          localField: "restaurant",
+          foreignField: "_id",
+          as: "restaurant",
+        },
+      },
+
+      {
+        $unwind: {
+          path: "$restaurant",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+
+      {
+        $lookup: {
+          from: "branches",
+          localField: "applicableBranches",
+          foreignField: "_id",
+          as: "applicableBranches",
+        },
+      },
+
+      {
+        $lookup: {
+          from: "customers",
+          localField: "applicableCustomers",
+          foreignField: "_id",
+          as: "applicableCustomers",
+        },
+      },
+
+      {
+        $sort: {
+          deletedAt: -1,
+        },
+      },
+
+      {
+        $facet: {
+          data: [
+            {
+              $skip: skip,
+            },
+            {
+              $limit: perPage,
+            },
+          ],
+
+          total: [
+            {
+              $count: "count",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const coupons = result[0]?.data || [];
+
+    const total =
+      result[0]?.total[0]?.count || 0;
+
+    return res.status(StatusCode.SUCCESS).json({
+      status: true,
+      message: "Deleted coupons fetched successfully",
+
+      data: coupons,
+
+      pagination: {
+        total,
+        page: currentPage,
+        limit: perPage,
+        totalPages: Math.ceil(
+          total / perPage
+        ),
+      },
+    });
+  } catch (error) {
+    console.error(
+      "getDeletedCoupons error:",
+      error
+    );
+
+    return res.status(StatusCode.SERVER_ERROR).json({
+      status: false,
+      message: error.message,
+    });
+  }
+}
 }
 
 const couponController = new CouponController();

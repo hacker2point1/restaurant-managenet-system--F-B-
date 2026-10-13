@@ -9,12 +9,6 @@ const tableController = require("../../controller/table/table.controller");
 
 
 // ==========================================
-// TABLE MANAGEMENT
-// ADMIN + MANAGER
-// ==========================================
-
-
-// ==========================================
 // Create table
 // POST /api/branches/:branchId/tables
 // ==========================================
@@ -31,6 +25,13 @@ router.post(
 // Get all tables
 // GET /api/branches/:branchId/tables
 // ==========================================
+
+router.get(
+  "/tables",
+  Auth,
+  authorize("admin", "manager"),
+  tableController.getAllTables
+);
 
 router.get(
   "/branches/:branchId/tables",

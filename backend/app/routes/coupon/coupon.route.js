@@ -23,6 +23,13 @@ router.get(
   couponController.getCoupons
 );
 
+router.get(
+  "/coupons/deleted",
+  Auth,
+  authorize("admin", "manager"),
+  couponController.getDeletedCoupons
+);
+
 
 
 router.post(

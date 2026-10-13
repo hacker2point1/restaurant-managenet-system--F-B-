@@ -37,6 +37,14 @@ router.get(
   customerController.searchCustomers
 );
 
+// Get deleted customers
+router.get(
+  "/customers/deleted",
+  Auth,
+  authorize("admin", "manager"),
+  customerController.getDeletedCustomers
+);
+
 // Get customer by ID
 router.get(
   "/customers/:id",

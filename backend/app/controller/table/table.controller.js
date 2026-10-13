@@ -2,10 +2,92 @@ const mongoose = require("mongoose");
 
 const Table = require("../../models/table.model");
 const Branch = require("../../models/branch.model");
+const Restaurant = require("../../models/resturant.model");
 const statusCode = require("../../utils/statusCode");
 
 
 class TableController {
+  // ============================================================
+  // GET TABLES WITH OPTIONAL RESTAURANT / BRANCH FILTERS
+  // ============================================================
+
+  async getAllTables(req, res) {
+    try {
+      const { restaurantId, branchId } = req.query;
+      const filter = { isDeleted: false };
+
+      if (restaurantId && !mongoose.Types.ObjectId.isValid(restaurantId)) {
+        return res.status(statusCode.BAD_REQUEST).json({
+          status: false,
+          message: "Invalid restaurant ID",
+        });
+      }
+
+      if (branchId) {
+        if (!mongoose.Types.ObjectId.isValid(branchId)) {
+          return res.status(statusCode.BAD_REQUEST).json({
+            status: false,
+            message: "Invalid branch ID",
+          });
+        }
+
+        const branchFilter = {
+          _id: branchId,
+          isDeleted: false,
+          ...(restaurantId ? { restaurant: restaurantId } : {}),
+        };
+        const branch = await Branch.findOne(branchFilter).select("_id");
+
+        if (!branch) {
+          return res.status(statusCode.NOT_FOUND).json({
+            status: false,
+            message: "Branch not found",
+          });
+        }
+
+        filter.branch = branch._id;
+      } else if (restaurantId) {
+        const restaurant = await Restaurant.findOne({
+          _id: restaurantId,
+          isDeleted: false,
+        }).select("_id");
+
+        if (!restaurant) {
+          return res.status(statusCode.NOT_FOUND).json({
+            status: false,
+            message: "Restaurant not found",
+          });
+        }
+
+        const branches = await Branch.find({
+          restaurant: restaurant._id,
+          isDeleted: false,
+        }).select("_id");
+
+        filter.branch = { $in: branches.map((branch) => branch._id) };
+      }
+
+      const tables = await Table.find(filter)
+        .populate("branch", "name branchCode restaurant")
+        .sort({ tableNumber: 1 });
+
+      return res.status(statusCode.SUCCESS).json({
+        status: true,
+        message: "Tables fetched successfully",
+        count: tables.length,
+        data: tables,
+      });
+    } catch (error) {
+      console.error("Get All Tables Error:", error);
+
+      return res.status(statusCode.SERVER_ERROR).json({
+        status: false,
+        message: "Failed to fetch tables",
+        error: error.message,
+      });
+    }
+  }
+
   // ============================================================
   // CREATE TABLE
   // ============================================================

@@ -228,12 +228,45 @@ class BranchController {
         });
       }
 
-      const branches = await Branch.find({
+      let branches = await Branch.find({
         restaurant: restaurantId,
         isDeleted: false,
       }).sort({
         createdAt: -1,
       });
+
+      if (!branches.some((branch) => branch.isActive)) {
+        await Branch.findOneAndUpdate(
+          {
+            restaurant: restaurantId,
+            branchCode: "MAIN",
+          },
+          {
+            $set: {
+              name: "Main Branch",
+              isActive: true,
+              isDeleted: false,
+              deletedAt: null,
+            },
+            $setOnInsert: {
+              restaurant: restaurantId,
+            },
+          },
+          {
+            new: true,
+            upsert: true,
+            runValidators: true,
+            setDefaultsOnInsert: true,
+          }
+        );
+
+        branches = await Branch.find({
+          restaurant: restaurantId,
+          isDeleted: false,
+        }).sort({
+          createdAt: -1,
+        });
+      }
 
       return res.status(statusCode.SUCCESS).json({
         status: true,

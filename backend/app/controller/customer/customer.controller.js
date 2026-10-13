@@ -1,10 +1,20 @@
 const Customer = require("../../models/customer.model");
+const User = require("../../models/users.model");
 const Order = require("../../models/order.Model");
 const Reservation = require("../../models/customer.model");
 const Review = require("../../models/review.model");
 
 const StatusCode = require("../../utils/statusCode");
-const { isValidId } = require("../../utils/validation/validation");
+const { isValid: isValidId } = require("../../utils/validation/validation");
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function createPhoneSearchRegex(value) {
+  const digits = value.replace(/\D/g, "");
+  return digits ? new RegExp(digits.split("").join("\\D*")) : null;
+}
 
 class CustomerController {
   // ============================================================
@@ -111,6 +121,7 @@ class CustomerController {
         page = 1,
         limit = 10,
         isActive,
+        search,
       } = req.query;
 
       // --------------------------------------------------------
@@ -123,6 +134,30 @@ class CustomerController {
 
       if (isActive !== undefined) {
         filter.isActive = isActive === "true";
+      }
+
+      const searchTerm =
+        typeof search === "string" ? search.trim() : "";
+
+      if (searchTerm) {
+        const searchRegex = new RegExp(escapeRegex(searchTerm), "i");
+        const phoneRegex = createPhoneSearchRegex(searchTerm);
+        const matchingUsers = await User.find({
+          $or: [
+            { name: searchRegex },
+            { email: searchRegex },
+            { phone: searchRegex },
+            ...(phoneRegex ? [{ phone: phoneRegex }] : []),
+          ],
+        }).distinct("_id");
+
+        filter.$or = [
+          { name: searchRegex },
+          { email: searchRegex },
+          { phone: searchRegex },
+          ...(phoneRegex ? [{ phone: phoneRegex }] : []),
+          { user: { $in: matchingUsers } },
+        ];
       }
 
       // --------------------------------------------------------
@@ -455,42 +490,64 @@ class CustomerController {
   async searchCustomers(req, res) {
     try {
       const { q } = req.query;
+      const searchTerm =
+        typeof q === "string" ? q.trim() : "";
 
-      if (!q) {
+      if (!searchTerm) {
         return res.status(StatusCode.BAD_REQUEST).json({
           status: false,
           message: "Search query is required",
         });
       }
 
-      const customers = await Customer.find({
-        isDeleted: false,
-        $or: [
-          {
-            name: {
-              $regex: q,
-              $options: "i",
-            },
+      const searchRegex = new RegExp(
+        searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      );
+
+      const customers = await Customer.aggregate([
+        {
+          $match: {
+            isDeleted: { $ne: true },
           },
-          {
-            email: {
-              $regex: q,
-              $options: "i",
-            },
+        },
+        {
+          $lookup: {
+            from: "users",
+            localField: "user",
+            foreignField: "_id",
+            as: "linkedUser",
           },
-          {
-            phone: {
-              $regex: q,
-              $options: "i",
-            },
+        },
+        {
+          $unwind: {
+            path: "$linkedUser",
+            preserveNullAndEmptyArrays: true,
           },
-        ],
-      })
-        .populate(
-          "user",
-          "name email phone role"
-        )
-        .sort({ createdAt: -1 });
+        },
+        {
+          $match: {
+            $or: [
+              { name: searchRegex },
+              { email: searchRegex },
+              { phone: searchRegex },
+              { "linkedUser.name": searchRegex },
+              { "linkedUser.email": searchRegex },
+              { "linkedUser.phone": searchRegex },
+            ],
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 20 },
+        {
+          $project: {
+            _id: 1,
+            name: { $ifNull: ["$name", "$linkedUser.name"] },
+            email: { $ifNull: ["$email", "$linkedUser.email"] },
+            phone: { $ifNull: ["$phone", "$linkedUser.phone"] },
+          },
+        },
+      ]);
 
       return res.status(StatusCode.SUCCESS).json({
         status: true,
@@ -1279,6 +1336,76 @@ class CustomerController {
       });
     }
   }
+
+  // GET DELETED CUSTOMERS
+async getDeletedCustomers(req, res) {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+    } = req.query;
+
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const limitNumber = Math.min(
+      Math.max(Number(limit) || 10, 1),
+      100
+    );
+
+    const filter = { isDeleted: true };
+
+    if (typeof search === "string" && search.trim()) {
+      const searchTerm = search.trim();
+      const regex = new RegExp(escapeRegex(searchTerm), "i");
+      const phoneRegex = createPhoneSearchRegex(searchTerm);
+      const matchingUsers = await User.find({
+        $or: [
+          { name: regex },
+          { email: regex },
+          { phone: regex },
+          ...(phoneRegex ? [{ phone: phoneRegex }] : []),
+        ],
+      }).distinct("_id");
+
+      filter.$or = [
+        { name: regex },
+        { email: regex },
+        { phone: regex },
+        ...(phoneRegex ? [{ phone: phoneRegex }] : []),
+        { user: { $in: matchingUsers } },
+      ];
+    }
+
+    const [customers, total] = await Promise.all([
+      Customer.find(filter)
+        .populate("user", "name email phone role")
+        .sort({ deletedAt: -1 })
+        .skip((pageNumber - 1) * limitNumber)
+        .limit(limitNumber),
+      Customer.countDocuments(filter),
+    ]);
+
+    return res.status(StatusCode.SUCCESS).json({
+      status: true,
+      message: "Deleted customers fetched successfully",
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber),
+      },
+      data: customers,
+    });
+  } catch (error) {
+    console.error("Get Deleted Customers Error:", error);
+
+    return res.status(StatusCode.SERVER_ERROR).json({
+      status: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+}
 }
 
 module.exports= new CustomerController()

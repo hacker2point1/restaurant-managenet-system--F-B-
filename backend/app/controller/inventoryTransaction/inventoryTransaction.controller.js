@@ -4,10 +4,31 @@ const InventoryTransaction = require("../../models/inventoryTransaction.model");
 const InventoryItem = require("../../models/inventoryItem.model");
 
 const statusCode = require("../../utils/statusCode");
-const { isValidId } = require("../../utils/validation/validation");
+const { isValid: isValidId } = require("../../utils/validation/validation");
 
 class InventoryTransactionController {
- 
+  constructor() {
+    const methodNames = [
+      "getInventoryItem",
+      "createTransaction",
+      "stockIn",
+      "stockOut",
+      "purchaseStock",
+      "recordWastage",
+      "recordReturn",
+      "adjustStock",
+      "getTransactions",
+      "getTransactionById",
+      "getItemTransactionHistory",
+      "getInventoryConsumption",
+      "getInventoryTransactionReport",
+    ];
+
+    methodNames.forEach((methodName) => {
+      this[methodName] = this[methodName].bind(this);
+    });
+  }
+
   async getInventoryItem(inventoryItemId) {
     if (!isValidId(inventoryItemId)) {
       return null;
@@ -630,7 +651,9 @@ class InventoryTransactionController {
         },
       });
     } catch (error) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
 
       console.error(
         "Record Wastage Error:",
@@ -644,7 +667,7 @@ class InventoryTransactionController {
         error: error.message,
       });
     } finally {
-      session.endSession();
+      await session.endSession();
     }
   }
 
@@ -913,7 +936,53 @@ class InventoryTransactionController {
         type,
         startDate,
         endDate,
+        search,
       } = req.query;
+
+      const match = {};
+
+      if (search && search.trim()) {
+  const searchRegex = new RegExp(search.trim(), "i");
+
+  const matchingItems = await InventoryItem.find({
+    $or: [
+      { name: searchRegex },
+      { sku: searchRegex },
+    ],
+  }).select("_id");
+
+  const itemIds = matchingItems.map((item) => item._id);
+
+  const searchConditions = [];
+
+  if (itemIds.length) {
+    searchConditions.push({
+      inventoryItem: { $in: itemIds },
+    });
+  }
+
+  if (isValidId(search.trim())) {
+    searchConditions.push({
+      _id: new mongoose.Types.ObjectId(search.trim()),
+    });
+  }
+
+  if (searchConditions.length) {
+    match.$or = searchConditions;
+  } else {
+    match.inventoryItem = {
+      $in: [],
+    };
+  }
+}
+
+
+
+
+
+
+
+
 
       const pageNumber = Math.max(
         Number(page),
@@ -927,8 +996,6 @@ class InventoryTransactionController {
 
       const skip =
         (pageNumber - 1) * limitNumber;
-
-      const match = {};
 
       // --------------------------------------------------------
       // Branch

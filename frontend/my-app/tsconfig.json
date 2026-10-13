@@ -19,6 +19,8 @@
       }
     ],
     "paths": {
+      "@/components/reviews/*": ["./src/components/reviews/*"],
+      "@/redux/hooks": ["./redux/hooks/hooks.ts"],
       "@/*": ["./*"]
     }
   },

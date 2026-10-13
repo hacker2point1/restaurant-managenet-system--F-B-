@@ -20,7 +20,16 @@ router.post(
   authorize("admin", "manager"),
   inventoryItemController.createInventoryItem
 );
+// ======================================================
+// GET DELETED INVENTORY ITEMS
+// ======================================================
 
+router.get(
+  "/branches/:branchId/inventory/deleted",
+  Auth,
+  authorize("admin", "manager"),
+  inventoryItemController.getDeletedInventoryItems
+);
 
 // ======================================================
 // GET INVENTORY ITEMS

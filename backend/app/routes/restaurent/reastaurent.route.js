@@ -8,6 +8,10 @@ const authorize = require("../../middleware/authorize");
 const restaurantController = require("../../controller/restaurant/restaurant.controller");
 const upload = require("../../middleware/upload");
 
+const publicRestaurantController = require(
+  "../../controller/restaurant/publicRestaurent.controller"
+);
+
 
 // ==========================================
 // RESTAURANT MANAGEMENT
@@ -32,6 +36,17 @@ router.get(
   restaurantController.getRestaurants
 );
 
+// Public restaurant listing
+router.get(
+  "/public",
+  publicRestaurantController.getPublicRestaurants
+);
+
+router.get(
+  "/public/:id",
+  publicRestaurantController.getPublicRestaurantById
+);
+
 // Get restaurant by ID
 router.get(
   "/:id",
@@ -44,7 +59,7 @@ router.get(
 router.patch(
   "/:id",
   Auth,
-  authorize("admin"),
+  authorize("admin", "manager"),
   upload.cleanupLocalFiles,
   upload.array("images", 10),
   restaurantController.updateRestaurant
@@ -75,12 +90,12 @@ router.patch(
 );
 
 // Soft delete restaurant
-router.patch(
-  "/:id/soft-delete",
-  Auth,
-  authorize("admin", "manager"),
-  restaurantController.softDeleteRestaurant
-);
+// router.patch(
+//   "/:id/soft-delete",
+//   Auth,
+//   authorize("admin", "manager"),
+//   restaurantController.softDeleteRestaurant
+// );
 
 // Restore restaurant
 router.patch(

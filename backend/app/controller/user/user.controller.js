@@ -1,39 +1,313 @@
 
 const User = require("../../models/users.model");
 const StatusCode = require("../../utils/statusCode");
+const bcryptjs = require('bcryptjs')
 
 class UserController {
+
+
+  //CREATE A USER
+
+  async createUser(req, res) {
+    try {
+      const {
+        name,
+        email,
+        phone,
+        password,
+        role,
+        isActive,
+        isVerified,
+      } = req.body;
+
+      // ==========================================
+      // VALIDATION
+      // ==========================================
+
+      if (!name || !email || !password) {
+        return res.status(400).json({
+          success: false,
+          message: "Name, email and password are required",
+        });
+      }
+
+      // ==========================================
+      // CHECK EXISTING EMAIL
+      // ==========================================
+
+      const existingEmail = await User.findOne({
+        email: email.toLowerCase().trim(),
+      });
+
+      if (existingEmail) {
+        return res.status(409).json({
+          success: false,
+          message: "User with this email already exists",
+        });
+      }
+
+      // ==========================================
+      // CHECK EXISTING PHONE
+      // ==========================================
+
+      if (phone) {
+        const existingPhone = await User.findOne({
+          phone: phone.trim(),
+        });
+
+        if (existingPhone) {
+          return res.status(409).json({
+            success: false,
+            message: "User with this phone number already exists",
+          });
+        }
+      }
+
+      // ==========================================
+      // HASH PASSWORD
+      // ==========================================
+
+      const hashedPassword = await bcryptjs.hash(password, 12);
+
+      // ==========================================
+      // CREATE USER
+      // ==========================================
+
+      const user = await User.create({
+        name: name.trim(),
+        email: email.toLowerCase().trim(),
+        phone: phone ? phone.trim() : undefined,
+        password: hashedPassword,
+        role: role || "customer",
+        isActive: isActive !== undefined ? isActive : true,
+        isVerified: isVerified !== undefined ? isVerified : false,
+      });
+
+      // ==========================================
+      // RESPONSE
+      // ==========================================
+
+      return res.status(201).json({
+        success: true,
+        message: "User created successfully",
+        data: {
+          user: {
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            profileImage: user.profileImage,
+            role: user.role,
+            isActive: user.isActive,
+            isVerified: user.isVerified,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Create User Error:", error);
+
+      // Handle duplicate key error
+      if (error.code === 11000) {
+        const duplicateField = Object.keys(error.keyPattern || {})[0];
+
+        return res.status(409).json({
+          success: false,
+          message: `${duplicateField || "Field"} already exists`,
+        });
+      }
+
+      // Handle mongoose validation error
+      if (error.name === "ValidationError") {
+        const errors = Object.values(error.errors).map((err) => ({
+          field: err.path,
+          message: err.message,
+        }));
+
+        return res.status(400).json({
+          success: false,
+          message: "Validation failed",
+          errors,
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: error.message,
+      });
+    }
+  }
 
   // ============================================================
   // GET ALL USERS
   
   // ============================================================
 
-  async getAllUsers(req, res) {
-    try {
-      const users = await User.find()
-        .select(
-          "-password -refreshToken -passwordResetToken -passwordResetExpires"
-        )
-        .sort({ createdAt: -1 });
+async getAllUsers(req, res) {
+  try {
+    // ============================================================
+    // QUERY PARAMETERS
+    // ============================================================
 
-      return res.status(StatusCode.SUCCESS).json({
-        status: true,
-        message: "Users fetched successfully",
-        count: users.length,
-        data: users,
-      });
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      role,
+      status,
+    } = req.query;
 
-    } catch (error) {
-      console.error("Get All Users Error:", error);
+    // ============================================================
+    // PAGINATION
+    // ============================================================
 
-      return res.status(StatusCode.SERVER_ERROR).json({
-        status: false,
-        message: error.message,
-      });
+    const currentPage = Math.max(
+      Number(page) || 1,
+      1
+    );
+
+    const pageLimit = Math.min(
+      Math.max(Number(limit) || 10, 1),
+      100
+    );
+
+    const skip =
+      (currentPage - 1) * pageLimit;
+
+    // ============================================================
+    // FILTER
+    // ============================================================
+
+    const filter = {};
+
+    // ============================================================
+    // SEARCH
+    // ============================================================
+
+    if (search.trim()) {
+      const searchRegex = new RegExp(
+        search.trim(),
+        "i"
+      );
+
+      filter.$or = [
+        {
+          name: searchRegex,
+        },
+        {
+          email: searchRegex,
+        },
+        {
+          phone: searchRegex,
+        },
+      ];
     }
-  }
 
+    // ============================================================
+    // ROLE FILTER
+    // ============================================================
+
+    if (
+      role &&
+      ["admin", "manager", "staff", "customer"].includes(role)
+    ) {
+      filter.role = role;
+    }
+
+    // ============================================================
+    // STATUS FILTER
+    // ============================================================
+
+    if (status === "active") {
+      filter.isActive = true;
+    }
+
+    if (status === "inactive") {
+      filter.isActive = false;
+    }
+
+    // ============================================================
+    // GET USERS + TOTAL COUNT
+    // ============================================================
+
+    const [users, totalUsers] =
+      await Promise.all([
+        User.find(filter)
+          .select(
+            "-password -refreshToken -passwordResetToken -passwordResetExpires"
+          )
+          .sort({
+            createdAt: -1,
+          })
+          .skip(skip)
+          .limit(pageLimit),
+
+        User.countDocuments(filter),
+      ]);
+
+    // ============================================================
+    // PAGINATION INFORMATION
+    // ============================================================
+
+    const totalPages =
+      Math.ceil(
+        totalUsers / pageLimit
+      );
+
+    const hasNextPage =
+      currentPage < totalPages;
+
+    const hasPreviousPage =
+      currentPage > 1;
+
+    // ============================================================
+    // RESPONSE
+    // ============================================================
+
+    return res.status(
+      StatusCode.SUCCESS
+    ).json({
+      status: true,
+
+      message:
+        "Users fetched successfully",
+
+      count: users.length,
+
+      data: users,
+
+      pagination: {
+        currentPage,
+
+        limit: pageLimit,
+
+        totalUsers,
+
+        totalPages,
+
+        hasNextPage,
+
+        hasPreviousPage,
+      },
+    });
+
+  } catch (error) {
+
+    console.error(
+      "Get All Users Error:",
+      error
+    );
+
+    return res.status(
+      StatusCode.SERVER_ERROR
+    ).json({
+      status: false,
+      message: error.message,
+    });
+  }
+}
 
   // ============================================================
   // GET USER BY ID
