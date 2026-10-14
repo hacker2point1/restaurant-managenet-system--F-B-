@@ -21,6 +21,7 @@ import type {
 interface Branch {
   _id: string;
   name: string;
+  restaurantName?: string;
 }
 
 interface Props {
@@ -125,7 +126,9 @@ export default function InventoryTransactionFilters({
               key={item._id}
               value={item._id}
             >
-              {item.name}
+              {item.restaurantName
+                ? `${item.restaurantName} - ${item.name}`
+                : item.name}
             </SelectItem>
           ))}
         </SelectContent>

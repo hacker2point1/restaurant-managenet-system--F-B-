@@ -23,6 +23,8 @@ const publicAuthEndpoints = [
   endpoints.auth.signUp,
   endpoints.auth.verifyOtp,
   endpoints.auth.refreshToken,
+  endpoints.coupon.getPublicOffers,
+  endpoints.coupon.getFeaturedPublic,
 ];
 
 let refreshRequest: Promise<void> | null = null;
@@ -38,6 +40,9 @@ AxiosInstance.interceptors.response.use(
 
     const isPublicAuthRequest = publicAuthEndpoints.some(
       (endpoint) => requestUrl.includes(endpoint)
+    );
+    const isSessionRestoreRequest = requestUrl.includes(
+      endpoints.auth.profile
     );
 
     if (
@@ -80,6 +85,7 @@ AxiosInstance.interceptors.response.use(
         [401, 403].includes(
           refreshError.response?.status ?? 0
         ) &&
+        !isSessionRestoreRequest &&
         window.location.pathname !== "/login"
       ) {
         const signInUrl = new URL(

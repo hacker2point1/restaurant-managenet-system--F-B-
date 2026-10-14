@@ -5,6 +5,9 @@ const MenuItem = require("../../models/menuItem.model");
 const Branch = require("../../models/branch.model");
 const Customer = require("../../models/customer.model");
 const Table = require("../../models/table.model");
+const User = require("../../models/users.model");
+const Reservation = require("../../models/reservation.model");
+const Coupon = require("../../models/coupon.model");
 
 const statusCode = require("../../utils/statusCode");
 const { isValidId } = require("../../utils/validation/validation");
@@ -24,12 +27,42 @@ class OrderController {
       const {
         restaurant,
         branch,
-        customer,
+        customer: requestedCustomer,
         table,
         items,
         tax = 0,
         paymentMethod,
+        reservation,
+        couponCode,
       } = req.body;
+      let customer = requestedCustomer;
+
+      if (req.user?.role === "customer") {
+        const userId = req.user.id || req.user._id;
+        const user = await User.findById(userId).select("name email phone");
+
+        if (!user) {
+          return res.status(statusCode.UNAUTHORIZED).json({
+            status: false,
+            message: "Authenticated customer not found",
+          });
+        }
+
+        const customerProfile = await Customer.findOneAndUpdate(
+          { user: user._id },
+          {
+            $set: {
+              name: user.name,
+              email: user.email,
+              phone: user.phone,
+              isActive: true,
+              isDeleted: false,
+            },
+          },
+          { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+        );
+        customer = customerProfile._id;
+      }
 
       // --------------------------------------------------------
       // Validate restaurant
@@ -61,6 +94,13 @@ class OrderController {
         return res.status(statusCode.BAD_REQUEST).json({
           status: false,
           message: "Invalid customer ID",
+        });
+      }
+
+      if (req.user?.role === "customer" && (!reservation || !isValidId(reservation))) {
+        return res.status(statusCode.BAD_REQUEST).json({
+          status: false,
+          message: "A valid reservation is required to place a food order",
         });
       }
 
@@ -125,6 +165,39 @@ class OrderController {
           status: false,
           message: "Branch does not belong to this restaurant",
         });
+      }
+
+      if (reservation) {
+        if (!isValidId(reservation)) {
+          return res.status(statusCode.BAD_REQUEST).json({
+            status: false,
+            message: "Invalid reservation ID",
+          });
+        }
+
+        const reservationData = await Reservation.findOne({
+          _id: reservation,
+          branch,
+          table,
+          customer,
+          status: { $in: ["pending", "confirmed"] },
+        });
+
+        if (!reservationData) {
+          return res.status(statusCode.BAD_REQUEST).json({
+            status: false,
+            message: "Reservation does not match this customer, branch, and table",
+          });
+        }
+
+        const existingOrder = await Order.findOne({ reservation });
+        if (existingOrder) {
+          return res.status(statusCode.OK).json({
+            status: true,
+            message: "Food order already exists for this reservation",
+            data: existingOrder,
+          });
+        }
       }
 
       // --------------------------------------------------------
@@ -293,11 +366,72 @@ class OrderController {
         });
       }
 
-      // --------------------------------------------------------
-      // Discount
-      // --------------------------------------------------------
+      let coupon = null;
+      let discount = 0;
 
-      const discount = 0;
+      if (couponCode) {
+        const now = new Date();
+        coupon = await Coupon.findOne({
+          restaurant,
+          code: String(couponCode).trim().toUpperCase(),
+          isActive: true,
+          isDeleted: false,
+          startDate: { $lte: now },
+          expiryDate: { $gte: now },
+          minimumOrderAmount: { $lte: subtotal },
+          $and: [
+            {
+              $or: [
+                { applicableBranches: { $size: 0 } },
+                { applicableBranches: branch },
+              ],
+            },
+            {
+              $or: [
+                { applicableCustomers: { $size: 0 } },
+                { applicableCustomers: customer },
+              ],
+            },
+            {
+              $or: [
+                { usageLimit: { $exists: false } },
+                { usageLimit: null },
+                { $expr: { $lt: ["$usageCount", "$usageLimit"] } },
+              ],
+            },
+          ],
+        });
+
+        if (!coupon) {
+          return res.status(statusCode.BAD_REQUEST).json({
+            status: false,
+            message: "Coupon is invalid or cannot be applied to this order",
+          });
+        }
+
+        if (coupon.perCustomerLimit && customer) {
+          const customerUses = await Order.countDocuments({
+            coupon: coupon._id,
+            customer,
+          });
+
+          if (customerUses >= coupon.perCustomerLimit) {
+            return res.status(statusCode.BAD_REQUEST).json({
+              status: false,
+              message: "This customer has reached the coupon usage limit",
+            });
+          }
+        }
+
+        discount = coupon.discountType === "percentage"
+          ? (subtotal * coupon.discountValue) / 100
+          : coupon.discountValue;
+
+        if (coupon.maximumDiscountAmount !== undefined && coupon.maximumDiscountAmount !== null) {
+          discount = Math.min(discount, coupon.maximumDiscountAmount);
+        }
+        discount = Math.min(discount, subtotal);
+      }
 
       // --------------------------------------------------------
       // Calculate total
@@ -326,17 +460,25 @@ class OrderController {
         branch,
         customer: customer || undefined,
         table: table || undefined,
+        reservation: reservation || undefined,
         items: orderItems,
         subtotal,
         discount,
         tax: Number(tax),
         totalAmount,
+        coupon: coupon?._id,
         status: "pending",
         paymentStatus: "pending",
         paymentMethod,
         orderedAt: new Date(),
         createdBy: req.user?._id || req.user?.id,
       });
+
+      if (coupon) {
+        await Coupon.findByIdAndUpdate(coupon._id, {
+          $inc: { usageCount: 1 },
+        });
+      }
 
       return res.status(statusCode.CREATED).json({
         status: true,

@@ -45,5 +45,13 @@ export const endpoints = {
     getAll: "/api/v1/branch/customers",
     create: "/api/v1/branch/customers",
   },
+  order: {
+    create: "/api/v1/order/orders",
+  },
+  coupon: {
+    validate: "/api/v1/coupon/coupons/validate",
+    getPublicOffers: "/api/v1/coupon/coupons/public",
+    getFeaturedPublic: "/api/v1/coupon/coupons/public/featured",
+  },
 
 }

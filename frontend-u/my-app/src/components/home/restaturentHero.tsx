@@ -48,7 +48,7 @@ export default function RestaurantHero() {
   );
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [location, setLocation] = useState("Mumbai, India");
+  const [location, setLocation] = useState("Kolkata, India");
 
   useEffect(() => {
     dispatch(fetchHomepageStats());
@@ -175,7 +175,7 @@ export default function RestaurantHero() {
 
               <Button
                 variant="outline"
-                onClick={() => router.push("/restaurents")}
+                onClick={() => router.push("/restaurants")}
                 className="h-12 rounded-xl border-white/40 bg-white/10 px-6 font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20 hover:text-white"
               >
                 Book a table

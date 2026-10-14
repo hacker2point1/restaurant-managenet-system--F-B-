@@ -52,4 +52,22 @@ const Auth = (req, res, next) => {
   }
 };
 
+const optionalAuth = (req, res, next) => {
+  const token = getTokenFromRequest(req);
+
+  if (!token) return next();
+
+  try {
+    req.user = jwt.verify(
+      token,
+      process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET
+    );
+  } catch {
+    req.user = null;
+  }
+
+  return next();
+};
+
 module.exports = Auth;
+module.exports.optionalAuth = optionalAuth;

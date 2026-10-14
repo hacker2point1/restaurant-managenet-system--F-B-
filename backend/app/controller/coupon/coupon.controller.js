@@ -2,9 +2,27 @@ const mongoose = require("mongoose");
 
 const Coupon = require("../../models/coupon.model");
 const Order = require("../../models/order.Model");
+const Customer = require("../../models/customer.model");
+const User = require("../../models/users.model");
 
 const StatusCode = require("../../utils/statusCode");
 const { isValid: isValidId } = require("../../utils/validation/validation");
+
+async function findCustomerProfileForUser(user) {
+  const profileFilter = { isActive: true, isDeleted: false };
+  const linkedProfile = await Customer.findOne({
+    ...profileFilter,
+    user: user._id,
+  }).select("_id user").lean();
+
+  if (linkedProfile || !user.email) return linkedProfile;
+
+  return Customer.findOne({
+    ...profileFilter,
+    email: user.email,
+    $or: [{ user: null }, { user: { $exists: false } }],
+  }).select("_id user").lean();
+}
 
 class CouponController {
   // ============================================================
@@ -945,12 +963,67 @@ if (audience === "specific") {
         customer,
         orderAmount,
       } = req.body;
+      let validationCustomer = customer;
+
+      if (req.user?.role === "customer") {
+        const userId = req.user.id || req.user._id;
+        const user = await User.findById(userId).select("name email phone");
+
+        if (!user) {
+          return res.status(StatusCode.UNAUTHORIZED).json({
+            status: false,
+            message: "Authenticated customer not found",
+          });
+        }
+
+        let customerProfile = await findCustomerProfileForUser(user);
+
+        if (customerProfile) {
+          customerProfile = await Customer.findByIdAndUpdate(
+            customerProfile._id,
+            {
+              $set: {
+                user: user._id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                isActive: true,
+                isDeleted: false,
+              },
+            },
+            { new: true, runValidators: true }
+          );
+        } else {
+          customerProfile = await Customer.findOneAndUpdate(
+            { user: user._id },
+            {
+              $set: {
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                isActive: true,
+                isDeleted: false,
+              },
+            },
+            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+          );
+        }
+
+        validationCustomer = customerProfile._id;
+      }
 
       if (!code || !restaurant || orderAmount === undefined) {
         return res.status(StatusCode.BAD_REQUEST).json({
           status: false,
           message:
             "code, restaurant and orderAmount are required",
+        });
+      }
+
+      if (!Number.isFinite(Number(orderAmount)) || Number(orderAmount) < 0) {
+        return res.status(StatusCode.BAD_REQUEST).json({
+          status: false,
+          message: "orderAmount must be a non-negative number",
         });
       }
 
@@ -968,7 +1041,7 @@ if (audience === "specific") {
         });
       }
 
-      if (customer && !isValidId(customer)) {
+      if (validationCustomer && !isValidId(validationCustomer)) {
         return res.status(StatusCode.BAD_REQUEST).json({
           status: false,
           message: "Invalid customer ID",
@@ -1027,11 +1100,11 @@ if (audience === "specific") {
                   $size: 0,
                 },
               },
-              ...(customer
+              ...(validationCustomer
                 ? [
                     {
                       applicableCustomers:
-                        new mongoose.Types.ObjectId(customer),
+                        new mongoose.Types.ObjectId(validationCustomer),
                     },
                   ]
                 : []),
@@ -1085,6 +1158,20 @@ if (audience === "specific") {
       }
 
       const coupon = coupons[0];
+
+      if (coupon.perCustomerLimit && validationCustomer) {
+        const customerUses = await Order.countDocuments({
+          coupon: coupon._id,
+          customer: validationCustomer,
+        });
+
+        if (customerUses >= coupon.perCustomerLimit) {
+          return res.status(StatusCode.BAD_REQUEST).json({
+            status: false,
+            message: "This customer has reached the coupon usage limit",
+          });
+        }
+      }
 
       let discount = 0;
 
@@ -1739,6 +1826,257 @@ if (audience === "specific") {
     return res.status(StatusCode.SERVER_ERROR).json({
       status: false,
       message: error.message,
+    });
+  }
+}
+
+// PUBLIC FEATURED COUPON
+async getPublicOffers(req, res) {
+  try {
+    const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 12, 1), 48);
+    const skip = (page - 1) * limit;
+    const now = new Date();
+    const { search = "", discountType } = req.query;
+    const customerUser = req.user?.role === "customer"
+      ? await User.findById(req.user.id || req.user._id).select("_id email").lean()
+      : null;
+    const customerProfile = customerUser
+      ? await findCustomerProfileForUser(customerUser)
+      : null;
+    const customerEligibility = [
+      { applicableCustomers: { $exists: false } },
+      { applicableCustomers: { $size: 0 } },
+    ];
+
+    if (customerProfile) {
+      customerEligibility.push({ applicableCustomers: customerProfile._id });
+    }
+
+    if (discountType && !["percentage", "fixed"].includes(discountType)) {
+      return res.status(StatusCode.BAD_REQUEST).json({
+        status: false,
+        message: "discountType must be percentage or fixed",
+      });
+    }
+
+    const matchStage = {
+      isActive: true,
+      isDeleted: false,
+      startDate: { $lte: now },
+      expiryDate: { $gte: now },
+      $and: [
+        {
+          $or: [
+            { usageLimit: { $exists: false } },
+            { usageLimit: null },
+            { $expr: { $lt: ["$usageCount", "$usageLimit"] } },
+          ],
+        },
+        { $or: customerEligibility },
+      ],
+    };
+
+    if (discountType) matchStage.discountType = discountType;
+
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $lookup: {
+          from: "restaurants",
+          localField: "restaurant",
+          foreignField: "_id",
+          as: "restaurant",
+        },
+      },
+      { $unwind: "$restaurant" },
+      {
+        $match: {
+          "restaurant.isActive": true,
+          "restaurant.isDeleted": false,
+        },
+      },
+    ];
+
+    const searchTerm = String(search).trim();
+    if (searchTerm) {
+      const escapedSearch = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pipeline.push({
+        $match: {
+          $or: [
+            { code: { $regex: escapedSearch, $options: "i" } },
+            { description: { $regex: escapedSearch, $options: "i" } },
+            { "restaurant.name": { $regex: escapedSearch, $options: "i" } },
+          ],
+        },
+      });
+    }
+
+    pipeline.push(
+      {
+        $lookup: {
+          from: "branches",
+          let: { branchIds: "$applicableBranches" },
+          pipeline: [
+            { $match: { $expr: { $in: ["$_id", { $ifNull: ["$$branchIds", []] }] } } },
+            { $match: { isActive: true, isDeleted: false } },
+            { $project: { _id: 1, name: 1, branchCode: 1 } },
+          ],
+          as: "offerBranches",
+        },
+      },
+      {
+        $addFields: {
+          restaurant: {
+            _id: "$restaurant._id",
+            name: "$restaurant.name",
+            image: {
+              $ifNull: [
+                {
+                  $arrayElemAt: [
+                    {
+                      $map: {
+                        input: {
+                          $filter: {
+                            input: { $ifNull: ["$restaurant.images", []] },
+                            as: "image",
+                            cond: { $ne: ["$$image.url", ""] },
+                          },
+                        },
+                        as: "image",
+                        in: "$$image.url",
+                      },
+                    },
+                    0,
+                  ],
+                },
+                "$restaurant.logo",
+              ],
+            },
+            city: "$restaurant.address.city",
+          },
+          applicableBranches: "$offerBranches",
+        },
+      },
+      { $sort: { expiryDate: 1, createdAt: -1 } },
+      {
+        $facet: {
+          data: [
+            { $skip: skip },
+            { $limit: limit },
+            {
+              $project: {
+                _id: 1,
+                code: 1,
+                description: 1,
+                discountType: 1,
+                discountValue: 1,
+                minimumOrderAmount: 1,
+                maximumDiscountAmount: 1,
+                expiryDate: 1,
+                restaurant: 1,
+                applicableBranches: 1,
+              },
+            },
+          ],
+          total: [{ $count: "count" }],
+        },
+      }
+    );
+
+    const [result] = await Coupon.aggregate(pipeline);
+    const total = result?.total[0]?.count || 0;
+
+    return res.status(StatusCode.SUCCESS).json({
+      status: true,
+      message: "Public offers fetched successfully",
+      data: result?.data || [],
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("getPublicOffers error:", error);
+    return res.status(StatusCode.SERVER_ERROR).json({
+      status: false,
+      message: "Failed to fetch offers",
+    });
+  }
+}
+
+async getFeaturedPublicCoupon(req, res) {
+  try {
+    const now = new Date();
+    const customerUser = req.user?.role === "customer"
+      ? await User.findById(req.user.id || req.user._id).select("_id email").lean()
+      : null;
+    const customerProfile = customerUser
+      ? await findCustomerProfileForUser(customerUser)
+      : null;
+    const customerEligibility = [
+      { applicableCustomers: { $exists: false } },
+      { applicableCustomers: { $size: 0 } },
+    ];
+
+    if (customerProfile) {
+      customerEligibility.push({ applicableCustomers: customerProfile._id });
+    }
+
+    const coupon = await Coupon.findOne({
+      isActive: true,
+      isDeleted: false,
+      startDate: { $lte: now },
+      expiryDate: { $gte: now },
+      $or: [
+        { usageLimit: { $exists: false } },
+        { usageLimit: null },
+        { $expr: { $lt: ["$usageCount", "$usageLimit"] } },
+      ],
+      $and: [{ $or: customerEligibility }],
+    })
+      .select(
+        "code description discountType discountValue minimumOrderAmount maximumDiscountAmount startDate expiryDate restaurant"
+      )
+      .populate({
+        path: "restaurant",
+        select: "name logo images",
+        match: { isActive: true, isDeleted: false },
+      })
+      .sort({ expiryDate: 1, createdAt: -1 })
+      .lean();
+
+    if (!coupon || !coupon.restaurant) {
+      return res.status(200).json({
+        status: true,
+        message: "No featured offer is currently available",
+        data: null,
+      });
+    }
+
+    return res.status(200).json({
+      status: true,
+      message: "Featured offer fetched successfully",
+      data: {
+        ...coupon,
+        restaurant: {
+          _id: coupon.restaurant._id,
+          name: coupon.restaurant.name,
+          image:
+            coupon.restaurant.images?.find((item) => item.url)?.url ||
+            coupon.restaurant.logo ||
+            "",
+        },
+      },
+    });
+  } catch (error) {
+    console.error("getFeaturedPublicCoupon error:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Failed to fetch featured offer",
     });
   }
 }

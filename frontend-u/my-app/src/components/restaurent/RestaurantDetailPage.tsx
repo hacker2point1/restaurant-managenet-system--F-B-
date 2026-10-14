@@ -8,7 +8,9 @@ import {
   ArrowLeft,
   CalendarDays,
   Clock3,
+  Minus,
   MapPin,
+  Plus,
   Phone,
   Users,
 } from "lucide-react";
@@ -96,6 +98,46 @@ interface CustomerResponse {
   data: Customer;
 }
 
+interface MenuCategory {
+  _id: string;
+  name: string;
+}
+
+interface MenuCategoriesResponse {
+  status: boolean;
+  message: string;
+  data: MenuCategory[];
+}
+
+interface MenuItem {
+  _id: string;
+  name: string;
+  description?: string;
+  price: number;
+  foodType: string;
+  categoryName: string;
+}
+
+interface MenuItemsResponse {
+  status: boolean;
+  message: string;
+  data: Omit<MenuItem, "categoryName">[];
+}
+
+interface CouponValidation {
+  couponId: string;
+  code: string;
+  discountAmount: number;
+  orderAmount: number;
+  finalAmount: number;
+}
+
+interface CouponValidationResponse {
+  status: boolean;
+  message: string;
+  data: CouponValidation;
+}
+
 function getLocalDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -149,6 +191,17 @@ export default function RestaurantDetailPage({
   const [newCustomerEmail, setNewCustomerEmail] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [menuError, setMenuError] = useState<string | null>(null);
+  const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
+  const [couponCode, setCouponCode] = useState("");
+  const [couponValidation, setCouponValidation] = useState<CouponValidation | null>(null);
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
+  const [pendingReservationOrder, setPendingReservationOrder] = useState<{
+    table: AvailableTable;
+    reservationId: string;
+  } | null>(null);
 
   const canSelectCustomer = ["admin", "manager", "staff"].includes(user?.role || "");
   const canCreateCustomer = ["admin", "manager", "staff"].includes(user?.role || "");
@@ -223,9 +276,117 @@ export default function RestaurantDetailPage({
     };
   }, [bookingOpen, canSelectCustomer, customerSearch]);
 
+  useEffect(() => {
+    if (!bookingOpen || !selectedBranchId || !isloggedIn) return;
+
+    const controller = new AbortController();
+
+    async function loadBranchMenu() {
+      setMenuLoading(true);
+      setMenuError(null);
+
+      try {
+        const categoriesResponse = await AxiosInstance.get<MenuCategoriesResponse>(
+          endpoints.menuCategory.getByBranch(selectedBranchId),
+          {
+            params: { page: 1, limit: 100, isActive: true },
+            signal: controller.signal,
+          }
+        );
+
+        if (!categoriesResponse.data.status) {
+          throw new Error(categoriesResponse.data.message || "Unable to load this branch's menu.");
+        }
+
+        const itemResponses = await Promise.all(
+          categoriesResponse.data.data.map(async (category) => {
+            const response = await AxiosInstance.get<MenuItemsResponse>(
+              endpoints.menuCategory.getMenuItems(category._id),
+              {
+                params: { page: 1, limit: 100, isAvailable: true },
+                signal: controller.signal,
+              }
+            );
+
+            if (!response.data.status) {
+              throw new Error(response.data.message || "Unable to load menu items.");
+            }
+
+            return response.data.data.map((item) => ({
+              ...item,
+              categoryName: category.name,
+            }));
+          })
+        );
+
+        setMenuItems(itemResponses.flat());
+      } catch (loadError: unknown) {
+        if (!controller.signal.aborted) {
+          setMenuError(getApiError(loadError, "Unable to load this branch's menu."));
+        }
+      } finally {
+        if (!controller.signal.aborted) setMenuLoading(false);
+      }
+    }
+
+    void loadBranchMenu();
+    return () => controller.abort();
+  }, [bookingOpen, isloggedIn, selectedBranchId]);
+
   const selectedBranch = restaurant?.branches.find(
     (branch) => branch._id === selectedBranchId
   );
+
+  const selectedItems = menuItems
+    .filter((item) => (itemQuantities[item._id] || 0) > 0)
+    .map((item) => ({ ...item, quantity: itemQuantities[item._id] }));
+  const orderSubtotal = selectedItems.reduce(
+    (total, item) => total + item.price * item.quantity,
+    0
+  );
+  const orderDiscount = couponValidation?.discountAmount || 0;
+  const orderTotal = Math.max(orderSubtotal - orderDiscount, 0);
+
+  async function applyCoupon() {
+    const code = couponCode.trim();
+
+    if (!code || !restaurant || !selectedBranchId || orderSubtotal <= 0) {
+      toast.error("Add food to your order and enter a coupon code first.");
+      return;
+    }
+
+    if (canSelectCustomer && !selectedCustomerId) {
+      toast.error("Select a customer before validating this coupon.");
+      return;
+    }
+
+    setValidatingCoupon(true);
+
+    try {
+      const response = await AxiosInstance.post<CouponValidationResponse>(
+        endpoints.coupon.validate,
+        {
+          code,
+          restaurant: restaurant._id,
+          branch: selectedBranchId,
+          ...(canSelectCustomer ? { customer: selectedCustomerId } : {}),
+          orderAmount: orderSubtotal,
+        }
+      );
+
+      if (!response.data.status) {
+        throw new Error(response.data.message || "This coupon cannot be applied.");
+      }
+
+      setCouponValidation(response.data.data);
+      toast.success(`${response.data.data.code} applied to this order.`);
+    } catch (couponError: unknown) {
+      setCouponValidation(null);
+      toast.error(getApiError(couponError, "This coupon cannot be applied."));
+    } finally {
+      setValidatingCoupon(false);
+    }
+  }
 
   async function checkAvailability() {
     if (!selectedBranchId) return;
@@ -279,36 +440,80 @@ export default function RestaurantDetailPage({
 
     if (!selectedBranchId) return;
 
+    if (pendingReservationOrder && pendingReservationOrder.table._id !== table._id) {
+      toast.error("Finish placing the food order for your reserved table first.");
+      return;
+    }
+
     setBookingTableId(table._id);
+    let reservationWasSaved = Boolean(pendingReservationOrder);
 
     try {
-      const startTime = makeDateTime(date, time);
-      const endTime = new Date(
-        new Date(startTime).getTime() + 2 * 60 * 60 * 1000
-      ).toISOString();
-      const reservationDate = makeDateTime(date, "00:00");
+      let reservationId = pendingReservationOrder?.reservationId;
 
-      const response = await AxiosInstance.post(
-        endpoints.reservation.createForBranch(selectedBranchId),
-        {
-          table: table._id,
-          reservationDate,
-          startTime,
-          endTime,
-          guestCount,
-          ...(canSelectCustomer ? { customer: selectedCustomerId } : {}),
+      if (!reservationId) {
+        const startTime = makeDateTime(date, time);
+        const endTime = new Date(
+          new Date(startTime).getTime() + 2 * 60 * 60 * 1000
+        ).toISOString();
+        const reservationDate = makeDateTime(date, "00:00");
+
+        const response = await AxiosInstance.post(
+          endpoints.reservation.createForBranch(selectedBranchId),
+          {
+            table: table._id,
+            reservationDate,
+            startTime,
+            endTime,
+            guestCount,
+            ...(canSelectCustomer ? { customer: selectedCustomerId } : {}),
+          }
+        );
+
+        if (!response.data.status || !response.data.data?._id) {
+          throw new Error(response.data.message || "Could not book this table.");
         }
-      );
 
-      if (!response.data.status) {
-        throw new Error(response.data.message || "Could not book this table.");
+        reservationId = response.data.data._id as string;
+        reservationWasSaved = true;
+
+        if (selectedItems.length > 0) {
+          setPendingReservationOrder({ table, reservationId });
+        }
       }
 
-      toast.success("Table requested. Your reservation is pending confirmation.");
+      if (selectedItems.length > 0) {
+        const orderResponse = await AxiosInstance.post(endpoints.order.create, {
+          restaurant: restaurant?._id,
+          branch: selectedBranchId,
+          table: table._id,
+          reservation: reservationId,
+          items: selectedItems.map(({ _id, quantity }) => ({
+            menuItem: _id,
+            quantity,
+          })),
+          ...(canSelectCustomer ? { customer: selectedCustomerId } : {}),
+          ...(couponValidation ? { couponCode: couponValidation.code } : {}),
+        });
+
+        if (!orderResponse.data.status) {
+          throw new Error(orderResponse.data.message || "Could not place the food order.");
+        }
+
+        toast.success("Reservation and food order placed successfully.");
+      } else {
+        toast.success("Table requested. Your reservation is pending confirmation.");
+      }
+
+      setPendingReservationOrder(null);
       setBookingOpen(false);
       await checkAvailability();
     } catch (bookingError: unknown) {
-      toast.error(getApiError(bookingError, "Could not book this table."));
+      toast.error(
+        reservationWasSaved
+          ? `Reservation saved, but the food order failed: ${getApiError(bookingError, "Please retry the order.")}`
+          : getApiError(bookingError, "Could not book this table.")
+      );
     } finally {
       setBookingTableId(null);
     }
@@ -335,6 +540,7 @@ export default function RestaurantDetailPage({
       const customer = response.data.data;
       setCustomers((current) => [customer, ...current.filter((item) => item._id !== customer._id)]);
       setSelectedCustomerId(customer._id);
+      setCouponValidation(null);
       setCustomerMode("existing");
       setCustomerSearch("");
       setNewCustomerName("");
@@ -469,10 +675,15 @@ export default function RestaurantDetailPage({
                   <button
                     key={branch._id}
                     type="button"
+                    disabled={pendingReservationOrder !== null}
                     onClick={() => {
                       setSelectedBranchId(branch._id);
                       setTables([]);
                       setAvailabilityChecked(false);
+                      setMenuItems([]);
+                      setItemQuantities({});
+                      setCouponCode("");
+                      setCouponValidation(null);
                     }}
                     aria-pressed={selectedBranchId === branch._id}
                     className={`flex w-full cursor-pointer items-start justify-between gap-4 rounded-lg border border-transparent px-3 py-5 text-left transition-colors hover:border-violet-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-inset ${selectedBranchId === branch._id ? "text-violet-700" : "text-slate-800"}`}
@@ -538,6 +749,7 @@ export default function RestaurantDetailPage({
                     {canCreateCustomer && (
                       <Button
                         type="button"
+                        disabled={pendingReservationOrder !== null}
                         variant={customerMode === "new" ? "default" : "outline"}
                         onClick={() => {
                           setCustomerMode("new");
@@ -550,6 +762,7 @@ export default function RestaurantDetailPage({
                     )}
                     <Button
                       type="button"
+                      disabled={pendingReservationOrder !== null}
                       variant={customerMode === "existing" ? "default" : "outline"}
                       onClick={() => setCustomerMode("existing")}
                       className={customerMode === "existing" ? "bg-violet-600 text-white hover:bg-violet-700" : ""}
@@ -562,6 +775,7 @@ export default function RestaurantDetailPage({
                   <span className="sr-only">Search customers</span>
                   <input
                     type="search"
+                    disabled={pendingReservationOrder !== null}
                     value={customerSearch}
                     onChange={(event) => setCustomerSearch(event.target.value)}
                     placeholder="Search by name, email, or phone"
@@ -574,7 +788,9 @@ export default function RestaurantDetailPage({
                   onChange={(event) => {
                     setSelectedCustomerId(event.target.value);
                     setCustomerMode("existing");
+                    setCouponValidation(null);
                   }}
+                  disabled={pendingReservationOrder !== null}
                   className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-slate-900"
                 >
                   <option value="">{customersLoading ? "Loading customers..." : "Select a customer"}</option>
@@ -595,6 +811,7 @@ export default function RestaurantDetailPage({
               <span className="mb-2 flex items-center gap-2"><CalendarDays className="h-4 w-4 text-violet-600" />Date</span>
               <input
                 type="date"
+                disabled={pendingReservationOrder !== null}
                 min={getLocalDate(new Date())}
                 value={date}
                 onChange={(event) => { setDate(event.target.value); setTables([]); setAvailabilityChecked(false); }}
@@ -605,6 +822,7 @@ export default function RestaurantDetailPage({
               <span className="mb-2 flex items-center gap-2"><Clock3 className="h-4 w-4 text-violet-600" />Start time</span>
               <input
                 type="time"
+                disabled={pendingReservationOrder !== null}
                 value={time}
                 onChange={(event) => { setTime(event.target.value); setTables([]); setAvailabilityChecked(false); }}
                 className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-slate-900"
@@ -614,6 +832,7 @@ export default function RestaurantDetailPage({
               <span className="mb-2 flex items-center gap-2"><Users className="h-4 w-4 text-violet-600" />Guests</span>
               <input
                 type="number"
+                disabled={pendingReservationOrder !== null}
                 min={1}
                 max={20}
                 value={guestCount}
@@ -623,9 +842,172 @@ export default function RestaurantDetailPage({
             </label>
           </div>
 
+          <section className="space-y-4 border-t border-slate-200 pt-4">
+            <div>
+              <h3 className="font-semibold text-slate-900">Add food to your order</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Choose dishes for this table and apply a coupon to the food subtotal.
+              </p>
+            </div>
+
+            {!isloggedIn ? (
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Sign in to browse the menu and place a food order.
+              </p>
+            ) : menuLoading ? (
+              <p className="py-3 text-sm text-slate-500">Loading this branch&apos;s menu...</p>
+            ) : menuError ? (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {menuError}
+              </p>
+            ) : menuItems.length === 0 ? (
+              <p className="py-3 text-sm text-slate-500">No available menu items at this branch.</p>
+            ) : (
+              <div className="max-h-56 divide-y divide-slate-200 overflow-y-auto border-y border-slate-200">
+                {menuItems.map((item) => {
+                  const quantity = itemQuantities[item._id] || 0;
+
+                  return (
+                    <article key={item._id} className="flex items-center justify-between gap-3 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-900">{item.name}</p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {item.categoryName} · {new Intl.NumberFormat("en-IN", {
+                            style: "currency",
+                            currency: "INR",
+                            maximumFractionDigits: 2,
+                          }).format(item.price)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {quantity > 0 && (
+                          <>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="outline"
+                              aria-label={`Remove one ${item.name}`}
+                              onClick={() => {
+                                setItemQuantities((current) => {
+                                  const next = { ...current };
+                                  const nextQuantity = (next[item._id] || 0) - 1;
+                                  if (nextQuantity <= 0) delete next[item._id];
+                                  else next[item._id] = nextQuantity;
+                                  return next;
+                                });
+                                setCouponValidation(null);
+                              }}
+                            >
+                              <Minus className="h-4 w-4" />
+                            </Button>
+                            <span className="w-5 text-center text-sm tabular-nums">{quantity}</span>
+                          </>
+                        )}
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="outline"
+                          aria-label={`Add one ${item.name}`}
+                          onClick={() => {
+                            setItemQuantities((current) => ({
+                              ...current,
+                              [item._id]: (current[item._id] || 0) + 1,
+                            }));
+                            setCouponValidation(null);
+                          }}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <input
+                type="text"
+                aria-label="Coupon code"
+                autoCapitalize="characters"
+                value={couponCode}
+                onChange={(event) => {
+                  setCouponCode(event.target.value);
+                  setCouponValidation(null);
+                }}
+                placeholder="Coupon code"
+                className="h-10 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm uppercase text-slate-900 placeholder:normal-case"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  validatingCoupon ||
+                  orderSubtotal <= 0 ||
+                  !couponCode.trim() ||
+                  (canSelectCustomer && !selectedCustomerId)
+                }
+                onClick={applyCoupon}
+              >
+                {validatingCoupon ? "Checking..." : "Apply coupon"}
+              </Button>
+            </div>
+
+            {selectedItems.length > 0 && (
+              <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                <div className="flex justify-between text-slate-600">
+                  <span>Food subtotal</span>
+                  <span>{new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(orderSubtotal)}</span>
+                </div>
+                {couponValidation && (
+                  <div role="status" className="flex justify-between text-emerald-700">
+                    <span>{couponValidation.code} discount</span>
+                    <span>−{new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(orderDiscount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between border-t border-slate-200 pt-1 font-semibold text-slate-900">
+                  <span>Order total</span>
+                  <span>{new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(orderTotal)}</span>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {pendingReservationOrder && (
+            <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              Your table is reserved. Retry the food order below to finish checkout.
+            </div>
+          )}
+
+          {pendingReservationOrder && (
+            <Button
+              type="button"
+              disabled={bookingTableId !== null || selectedItems.length === 0}
+              onClick={() => bookTable(pendingReservationOrder.table)}
+              className="h-11 w-full rounded-xl bg-violet-600 text-white hover:bg-violet-700"
+            >
+              {bookingTableId === pendingReservationOrder.table._id ? "Retrying order..." : "Retry food order"}
+            </Button>
+          )}
+
+          {pendingReservationOrder && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={bookingTableId !== null}
+              onClick={() => {
+                setPendingReservationOrder(null);
+                setBookingOpen(false);
+                toast.success("Reservation kept without a food order.");
+              }}
+            >
+              Continue with reservation only
+            </Button>
+          )}
+
           <Button
             type="button"
-            disabled={!selectedBranchId || checkingAvailability}
+            disabled={!selectedBranchId || checkingAvailability || pendingReservationOrder !== null}
             onClick={checkAvailability}
             className="h-11 w-full rounded-xl bg-violet-600 text-white hover:bg-violet-700"
           >

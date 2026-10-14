@@ -9,6 +9,7 @@ import InventoryTransactionPage from "@/src/components/inventory-transactions/In
 interface BranchOption {
   _id: string;
   name: string;
+  restaurantName: string;
 }
 
 interface InventoryOption {

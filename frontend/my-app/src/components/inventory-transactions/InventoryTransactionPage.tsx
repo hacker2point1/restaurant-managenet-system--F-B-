@@ -56,6 +56,7 @@ import type { RootState } from "@/redux/store/store";
 interface Branch {
   _id: string;
   name: string;
+  restaurantName?: string;
 }
 
 interface InventoryItem {

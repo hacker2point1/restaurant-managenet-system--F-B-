@@ -84,6 +84,13 @@ const orderSchema = new mongoose.Schema(
       ref: "Table",
     },
 
+    reservation: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Reservation",
+      unique: true,
+      sparse: true,
+    },
+
     items: {
       type: [orderItemSchema],
       required: true,

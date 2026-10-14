@@ -3,6 +3,7 @@ import authSlice from "../slice/authSlice";
 import homepageStatsSlice from "../slice/homePageStatSlice";
 import menuCategoryReducer from "../slice/menuCategorySlice";
 import restaurantReducer from "../slice/restaurantSlice";
+import weekendOfferReducer from "../slice/weekendOfferSlice";
 
 
 
@@ -12,6 +13,7 @@ const store = configureStore({
         homepageStats: homepageStatsSlice,
         menuCategories: menuCategoryReducer,
         restaurants: restaurantReducer,
+        weekendOffer: weekendOfferReducer,
 
       
        

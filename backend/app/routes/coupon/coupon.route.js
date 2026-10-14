@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const Auth = require("../../middleware/auth");
+const optionalAuth = Auth.optionalAuth;
 const authorize = require("../../middleware/authorize");
 
 const couponController = require("../../controller/coupon/coupon.controller");
@@ -35,7 +36,7 @@ router.get(
 router.post(
   "/coupons/validate",
   Auth,
-  authorize("admin", "manager", "staff"),
+  authorize("admin", "manager", "staff", "customer"),
   couponController.validateCoupon
 );
 
@@ -62,6 +63,17 @@ router.get(
   couponController.getCouponUsage
 );
 
+router.get(
+  "/coupons/public",
+  optionalAuth,
+  couponController.getPublicOffers
+);
+
+router.get(
+  "/coupons/public/featured",
+  optionalAuth,
+  couponController.getFeaturedPublicCoupon
+);
 
 
 router.get(

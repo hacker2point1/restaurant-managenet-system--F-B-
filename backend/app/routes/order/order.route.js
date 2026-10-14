@@ -14,7 +14,7 @@ const orderController = require("../../controller/order/order.controller");
 router.post(
   "/orders",
   Auth,
-  authorize("admin", "manager", "staff"),
+  authorize("admin", "manager", "staff", "customer"),
   orderController.createOrder
 );
 
